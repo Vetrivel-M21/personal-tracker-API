@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS streak_shields;
+DROP TABLE IF EXISTS daily_progress;
+DROP TYPE IF EXISTS mood_type;
+DROP TABLE IF EXISTS habits;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS users;
