@@ -24,7 +24,12 @@ type meResponse struct {
 	// than stored, so it never goes stale.
 	DateOfBirth *string `json:"date_of_birth"`
 	Age         *int    `json:"age"`
-	CreatedAt   string  `json:"created_at"`
+	// ProfilePrivate hides this account from Community/Leaderboard for
+	// everyone but itself; HideHabits keeps the profile visible but omits
+	// the habit list from handleUserHabitsSummary for everyone else.
+	ProfilePrivate bool   `json:"profile_private"`
+	HideHabits     bool   `json:"hide_habits"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // formatDOBAndAge converts a nullable birth date into the (date_of_birth,
@@ -43,12 +48,13 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 
 	var displayName string
 	var xp int
-	var hasPassword bool
+	var hasPassword, profilePrivate, hideHabits bool
 	var dob *time.Time
 	var createdAt time.Time
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT display_name, xp, has_password, date_of_birth, created_at FROM users WHERE id = $1`, userID).
-		Scan(&displayName, &xp, &hasPassword, &dob, &createdAt)
+		`SELECT display_name, xp, has_password, date_of_birth, profile_private, hide_habits, created_at
+		 FROM users WHERE id = $1`, userID).
+		Scan(&displayName, &xp, &hasPassword, &dob, &profilePrivate, &hideHabits, &createdAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load profile")
 		return
@@ -61,14 +67,18 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 		Level: level, XPIntoLevel: xpIntoLevel, XPForNextLevel: xpForNextLevel,
 		HasPassword: hasPassword,
 		DateOfBirth: dateOfBirth, Age: age,
+		ProfilePrivate: profilePrivate, HideHabits: hideHabits,
 		CreatedAt: createdAt.Format(time.RFC3339),
 	})
 }
 
 type updateMeRequest struct {
 	DisplayName string `json:"display_name"`
-	// DateOfBirth (ISO YYYY-MM-DD) is optional - nil means "don't change".
-	DateOfBirth *string `json:"date_of_birth"`
+	// DateOfBirth (ISO YYYY-MM-DD), ProfilePrivate, and HideHabits are all
+	// optional - nil means "don't change".
+	DateOfBirth    *string `json:"date_of_birth"`
+	ProfilePrivate *bool   `json:"profile_private"`
+	HideHabits     *bool   `json:"hide_habits"`
 }
 
 func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
@@ -100,13 +110,17 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var xp int
-	var hasPassword bool
+	var hasPassword, profilePrivate, hideHabits bool
 	var dob *time.Time
 	var createdAt time.Time
 	err := s.pool.QueryRow(r.Context(),
-		`UPDATE users SET display_name = $2, date_of_birth = COALESCE($3, date_of_birth), updated_at = now()
-		 WHERE id = $1 RETURNING xp, has_password, date_of_birth, created_at`,
-		userID, displayName, dobParam).Scan(&xp, &hasPassword, &dob, &createdAt)
+		`UPDATE users SET display_name = $2, date_of_birth = COALESCE($3, date_of_birth),
+		   profile_private = COALESCE($4, profile_private), hide_habits = COALESCE($5, hide_habits),
+		   updated_at = now()
+		 WHERE id = $1
+		 RETURNING xp, has_password, date_of_birth, profile_private, hide_habits, created_at`,
+		userID, displayName, dobParam, req.ProfilePrivate, req.HideHabits).
+		Scan(&xp, &hasPassword, &dob, &profilePrivate, &hideHabits, &createdAt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update profile")
 		return
@@ -119,6 +133,7 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		Level: level, XPIntoLevel: xpIntoLevel, XPForNextLevel: xpForNextLevel,
 		HasPassword: hasPassword,
 		DateOfBirth: dateOfBirth, Age: age,
+		ProfilePrivate: profilePrivate, HideHabits: hideHabits,
 		CreatedAt: createdAt.Format(time.RFC3339),
 	})
 }

@@ -30,11 +30,12 @@ type socialUserRow struct {
 // scale this app targets (tens of users, not thousands), computing streak
 // per user in a Go loop is simpler and fast enough; sorting/pagination then
 // happens in Go too since "streak" isn't a plain sortable column.
-func (s *Server) fetchAllUsersWithStats(ctx context.Context) ([]socialUserRow, error) {
+func (s *Server) fetchAllUsersWithStats(ctx context.Context, callerID string) ([]socialUserRow, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT u.id, u.display_name, u.xp, ws.name
 		 FROM users u
-		 LEFT JOIN workout_splits ws ON ws.user_id = u.id AND ws.is_active`)
+		 LEFT JOIN workout_splits ws ON ws.user_id = u.id AND ws.is_active
+		 WHERE u.profile_private = false OR u.id = $1`, callerID)
 	if err != nil {
 		return nil, fmt.Errorf("load users: %w", err)
 	}
@@ -71,7 +72,8 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	limit := parseIntOrDefault(r.URL.Query().Get("limit"), 25, 1, 200)
 	offset := parseIntOrDefault(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 
-	users, err := s.fetchAllUsersWithStats(r.Context())
+	callerID, _ := userIDFromContext(r.Context())
+	users, err := s.fetchAllUsersWithStats(r.Context(), callerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load leaderboard")
 		return
@@ -97,7 +99,8 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	limit := parseIntOrDefault(r.URL.Query().Get("limit"), 20, 1, 200)
 	offset := parseIntOrDefault(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 
-	users, err := s.fetchAllUsersWithStats(r.Context())
+	callerID, _ := userIDFromContext(r.Context())
+	users, err := s.fetchAllUsersWithStats(r.Context(), callerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load users")
 		return
@@ -125,21 +128,27 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUserHabitsSummary(w http.ResponseWriter, r *http.Request) {
 	targetID := r.PathValue("id")
+	callerID, _ := userIDFromContext(r.Context())
 
 	var displayName string
 	var xp int
+	var profilePrivate, hideHabits bool
 	var activeSplitName *string
 	err := s.pool.QueryRow(r.Context(),
-		`SELECT u.display_name, u.xp, ws.name
+		`SELECT u.display_name, u.xp, u.profile_private, u.hide_habits, ws.name
 		 FROM users u
 		 LEFT JOIN workout_splits ws ON ws.user_id = u.id AND ws.is_active
-		 WHERE u.id = $1`, targetID).Scan(&displayName, &xp, &activeSplitName)
+		 WHERE u.id = $1`, targetID).Scan(&displayName, &xp, &profilePrivate, &hideHabits, &activeSplitName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "user not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to load user")
+		return
+	}
+	if profilePrivate && targetID != callerID {
+		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
@@ -149,14 +158,6 @@ func (s *Server) handleUserHabitsSummary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	rows, err := s.pool.Query(r.Context(),
-		`SELECT id, name, color, icon FROM habits WHERE user_id = $1 ORDER BY created_at`, targetID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load habits")
-		return
-	}
-	defer rows.Close()
-
 	type habitSummary struct {
 		ID    string `json:"id"`
 		Name  string `json:"name"`
@@ -164,17 +165,28 @@ func (s *Server) handleUserHabitsSummary(w http.ResponseWriter, r *http.Request)
 		Icon  string `json:"icon"`
 	}
 	habits := []habitSummary{}
-	for rows.Next() {
-		var h habitSummary
-		if err := rows.Scan(&h.ID, &h.Name, &h.Color, &h.Icon); err != nil {
+	habitsHidden := hideHabits && targetID != callerID
+	if !habitsHidden {
+		rows, err := s.pool.Query(r.Context(),
+			`SELECT id, name, color, icon FROM habits WHERE user_id = $1 ORDER BY created_at`, targetID)
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load habits")
 			return
 		}
-		habits = append(habits, h)
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load habits")
-		return
+		defer rows.Close()
+
+		for rows.Next() {
+			var h habitSummary
+			if err := rows.Scan(&h.ID, &h.Name, &h.Color, &h.Icon); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load habits")
+				return
+			}
+			habits = append(habits, h)
+		}
+		if err := rows.Err(); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load habits")
+			return
+		}
 	}
 
 	level, _, _ := levelFromXP(xp)
@@ -185,5 +197,6 @@ func (s *Server) handleUserHabitsSummary(w http.ResponseWriter, r *http.Request)
 		"current_streak":    streak.CurrentStreak,
 		"active_split_name": activeSplitName,
 		"habits":            habits,
+		"habits_hidden":     habitsHidden,
 	})
 }
