@@ -138,6 +138,47 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type deleteAccountRequest struct {
+	Password string `json:"password"`
+}
+
+// handleDeleteAccount permanently deletes the caller's account. Every
+// user-owned table (habits, daily_progress, streak_shields, sessions,
+// workout_splits and everything under them) has ON DELETE CASCADE back to
+// users, so a single DELETE here removes all of it. A password account must
+// confirm its current password; a Google-only account (has_password =
+// false) has no password to check, so the frontend enforces a "type DELETE
+// to confirm" safeguard instead.
+func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	userID, _ := userIDFromContext(r.Context())
+
+	var req deleteAccountRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var hash string
+	var hasPassword bool
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT password_hash, has_password FROM users WHERE id = $1`, userID).Scan(&hash, &hasPassword); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete account")
+		return
+	}
+	if hasPassword && !verifyPassword(hash, req.Password) {
+		writeError(w, http.StatusUnauthorized, "password is incorrect")
+		return
+	}
+
+	if _, err := s.pool.Exec(r.Context(), `DELETE FROM users WHERE id = $1`, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete account")
+		return
+	}
+
+	clearAuthCookies(w)
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
 type changePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`

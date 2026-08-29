@@ -22,6 +22,7 @@ type socialUserRow struct {
 	XP              int     `json:"xp"`
 	CurrentStreak   int     `json:"current_streak"`
 	ActiveSplitName *string `json:"active_split_name"`
+	KudosCount      int     `json:"kudos_count"`
 }
 
 // fetchAllUsersWithStats loads every registered user with their level and a
@@ -32,7 +33,8 @@ type socialUserRow struct {
 // happens in Go too since "streak" isn't a plain sortable column.
 func (s *Server) fetchAllUsersWithStats(ctx context.Context, callerID string) ([]socialUserRow, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT u.id, u.display_name, u.xp, ws.name
+		`SELECT u.id, u.display_name, u.xp, ws.name,
+		        (SELECT COUNT(*) FROM kudos k WHERE k.to_user_id = u.id)
 		 FROM users u
 		 LEFT JOIN workout_splits ws ON ws.user_id = u.id AND ws.is_active
 		 WHERE u.profile_private = false OR u.id = $1`, callerID)
@@ -44,7 +46,7 @@ func (s *Server) fetchAllUsersWithStats(ctx context.Context, callerID string) ([
 	var result []socialUserRow
 	for rows.Next() {
 		var row socialUserRow
-		if err := rows.Scan(&row.UserID, &row.DisplayName, &row.XP, &row.ActiveSplitName); err != nil {
+		if err := rows.Scan(&row.UserID, &row.DisplayName, &row.XP, &row.ActiveSplitName, &row.KudosCount); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		result = append(result, row)
@@ -158,6 +160,13 @@ func (s *Server) handleUserHabitsSummary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	var kudosCount int
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM kudos WHERE to_user_id = $1`, targetID).Scan(&kudosCount); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load user")
+		return
+	}
+
 	type habitSummary struct {
 		ID    string `json:"id"`
 		Name  string `json:"name"`
@@ -198,5 +207,55 @@ func (s *Server) handleUserHabitsSummary(w http.ResponseWriter, r *http.Request)
 		"active_split_name": activeSplitName,
 		"habits":            habits,
 		"habits_hidden":     habitsHidden,
+		"kudos_count":       kudosCount,
 	})
+}
+
+// handleGiveKudos records the caller sending kudos to another hunter, once
+// per pair per day (enforced by the kudos_daily_unique_idx unique index --
+// a violation there becomes a friendly cooldown message rather than a raw
+// DB error).
+func (s *Server) handleGiveKudos(w http.ResponseWriter, r *http.Request) {
+	targetID := r.PathValue("id")
+	callerID, _ := userIDFromContext(r.Context())
+
+	if targetID == callerID {
+		writeError(w, http.StatusBadRequest, "you can't send kudos to yourself")
+		return
+	}
+
+	var profilePrivate bool
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT profile_private FROM users WHERE id = $1`, targetID).Scan(&profilePrivate)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to send kudos")
+		return
+	}
+	if profilePrivate {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	if _, err := s.pool.Exec(r.Context(),
+		`INSERT INTO kudos (from_user_id, to_user_id) VALUES ($1, $2)`, callerID, targetID); err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "you already sent kudos to this hunter today")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to send kudos")
+		return
+	}
+
+	var kudosCount int
+	if err := s.pool.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM kudos WHERE to_user_id = $1`, targetID).Scan(&kudosCount); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to send kudos")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{"kudos_count": kudosCount})
 }

@@ -1,0 +1,1 @@
+DROP TABLE unlocked_calisthenics_skills;

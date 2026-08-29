@@ -356,6 +356,125 @@ func (s *Server) handleResendVerification(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
+type forgotPasswordRequest struct {
+	Username string `json:"username"`
+}
+
+// handleForgotPassword issues a password-reset code, mirroring
+// handleResendVerification's anti-enumeration shape: a nonexistent account,
+// a Google-only account (has_password = false, nothing to reset), or one
+// with no email on file all get the same 204 as a real account that just
+// got emailed a code.
+func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req forgotPasswordRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var userID, email string
+	var hasPassword bool
+	var lastSentAt *time.Time
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT id, email, has_password, password_reset_last_sent_at FROM users WHERE lower(username) = lower($1)`,
+		req.Username).Scan(&userID, &email, &hasPassword, &lastSentAt)
+	if err != nil || !hasPassword || email == "" {
+		writeJSON(w, http.StatusNoContent, nil)
+		return
+	}
+	if lastSentAt != nil && time.Since(*lastSentAt) < verificationResendCooldown {
+		writeErrorWithCode(w, http.StatusTooManyRequests, "RESEND_COOLDOWN", "please wait before requesting another code")
+		return
+	}
+
+	code, err := generateVerificationCode()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to send reset code")
+		return
+	}
+	codeHash := hashVerificationCode(code)
+	expiresAt := time.Now().Add(verificationCodeTTL)
+
+	if _, err := s.pool.Exec(r.Context(),
+		`UPDATE users SET password_reset_code_hash = $2, password_reset_expires_at = $3,
+		   password_reset_attempts = 0, password_reset_last_sent_at = now(), updated_at = now()
+		 WHERE id = $1`, userID, codeHash, expiresAt); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to send reset code")
+		return
+	}
+
+	if sendErr := sendPasswordResetEmail(s.cfg, email, code); sendErr != nil {
+		log.Printf("forgot-password: failed to send email to user %s: %v", userID, sendErr)
+	}
+
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
+type resetPasswordRequest struct {
+	Username    string `json:"username"`
+	Code        string `json:"code"`
+	NewPassword string `json:"new_password"`
+}
+
+// handleResetPassword verifies a password-reset code and sets a new
+// password, the same code/hash/expiry/attempts check as handleVerifyEmail.
+// On success every existing session for the account is revoked (defense in
+// depth: a device holding a leaked old-password session shouldn't outlive
+// the reset) and the caller must log in fresh with the new password.
+func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req resetPasswordRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validatePassword(req.NewPassword); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var userID, codeHash string
+	var attempts int
+	var expiresAt *time.Time
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT id, password_reset_code_hash, password_reset_expires_at, password_reset_attempts
+		 FROM users WHERE lower(username) = lower($1)`,
+		req.Username).Scan(&userID, &codeHash, &expiresAt, &attempts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid or expired code")
+		return
+	}
+	if attempts >= verificationMaxAttempts {
+		writeError(w, http.StatusTooManyRequests, "too many attempts -- request a new code")
+		return
+	}
+	if expiresAt == nil || time.Now().After(*expiresAt) || codeHash == "" || hashVerificationCode(req.Code) != codeHash {
+		if _, updErr := s.pool.Exec(r.Context(),
+			`UPDATE users SET password_reset_attempts = password_reset_attempts + 1 WHERE id = $1`, userID); updErr != nil {
+			log.Printf("reset-password: failed to record attempt for user %s: %v", userID, updErr)
+		}
+		writeError(w, http.StatusBadRequest, "invalid or expired code")
+		return
+	}
+
+	newHash, err := hashPassword(req.NewPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reset password")
+		return
+	}
+	if _, err := s.pool.Exec(r.Context(),
+		`UPDATE users SET password_hash = $2, password_reset_code_hash = NULL,
+		   password_reset_expires_at = NULL, password_reset_attempts = 0, updated_at = now()
+		 WHERE id = $1`, userID, newHash); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to reset password")
+		return
+	}
+	if _, err := s.pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
+		log.Printf("reset-password: failed to revoke sessions for user %s: %v", userID, err)
+	}
+
+	writeJSON(w, http.StatusNoContent, nil)
+}
+
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if token, ok := refreshTokenFromRequest(r); ok {
 		_ = revokeSessionByToken(r.Context(), s.pool, token)

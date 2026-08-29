@@ -52,11 +52,21 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/google", s.handleGoogleLogin)
 	mux.HandleFunc("POST /api/auth/verify-email", s.handleVerifyEmail)
 	mux.HandleFunc("POST /api/auth/resend-verification", s.handleResendVerification)
+	mux.HandleFunc("POST /api/auth/forgot-password", s.handleForgotPassword)
+	mux.HandleFunc("POST /api/auth/reset-password", s.handleResetPassword)
 
 	mux.HandleFunc("GET /api/me", s.handleGetMe)
 	mux.HandleFunc("PATCH /api/me", s.handleUpdateMe)
+	mux.HandleFunc("DELETE /api/me", s.handleDeleteAccount)
 	mux.HandleFunc("PATCH /api/me/password", s.handleChangePassword)
 	mux.HandleFunc("GET /api/me/stats", s.handleGetMeStats)
+	mux.HandleFunc("GET /api/me/export", s.handleExportData)
+
+	mux.HandleFunc("POST /api/focus-sessions", s.handleLogFocusSession)
+	mux.HandleFunc("GET /api/focus-sessions", s.handleListFocusSessions)
+
+	mux.HandleFunc("GET /api/calisthenics/skills", s.handleListCalisthenicsSkills)
+	mux.HandleFunc("POST /api/calisthenics/skills/{skillId}/unlock", s.handleUnlockCalisthenicsSkill)
 
 	mux.HandleFunc("GET /api/habits", s.handleListHabits)
 	mux.HandleFunc("POST /api/habits", s.handleCreateHabit)
@@ -70,6 +80,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/leaderboard", s.handleLeaderboard)
 	mux.HandleFunc("GET /api/users", s.handleListUsers)
 	mux.HandleFunc("GET /api/users/{id}/habits-summary", s.handleUserHabitsSummary)
+	mux.HandleFunc("POST /api/users/{id}/kudos", s.handleGiveKudos)
 
 	mux.HandleFunc("GET /api/workouts/templates", s.handleListWorkoutTemplates)
 	mux.HandleFunc("GET /api/workouts/templates/{id}", s.handleGetWorkoutTemplate)

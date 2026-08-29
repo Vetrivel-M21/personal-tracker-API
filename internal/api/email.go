@@ -52,11 +52,11 @@ func maskEmail(email string) string {
 	return email[:1] + strings.Repeat("*", at-1) + email[at:]
 }
 
-// sendVerificationEmail sends a short plain-text message containing code to
-// toEmail via SMTP. net/smtp.SendMail negotiates STARTTLS automatically when
-// the server advertises it (true of every modern relay on port 587), so no
-// extra TLS handling is needed here.
-func sendVerificationEmail(cfg *Config, toEmail, code string) error {
+// sendEmail sends a short plain-text message to toEmail via SMTP.
+// net/smtp.SendMail negotiates STARTTLS automatically when the server
+// advertises it (true of every modern relay on port 587), so no extra TLS
+// handling is needed here.
+func sendEmail(cfg *Config, toEmail, subject, body string) error {
 	if cfg.SMTPHost == "" || cfg.SMTPPort == "" || cfg.SMTPFrom == "" {
 		return errEmailNotConfigured
 	}
@@ -67,13 +67,27 @@ func sendVerificationEmail(cfg *Config, toEmail, code string) error {
 		auth = smtp.PlainAuth("", cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPHost)
 	}
 
-	subject := "Your Aura verification code"
-	body := fmt.Sprintf(
-		"Your verification code is: %s\r\n\r\nThis code expires in 15 minutes.\r\nIf you didn't request this, you can safely ignore this email.\r\n",
-		code)
 	msg := fmt.Sprintf(
 		"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
 		cfg.SMTPFrom, toEmail, subject, body)
 
 	return smtp.SendMail(addr, auth, cfg.SMTPFrom, []string{toEmail}, []byte(msg))
+}
+
+// sendVerificationEmail sends a short plain-text message containing a
+// signup-verification code to toEmail.
+func sendVerificationEmail(cfg *Config, toEmail, code string) error {
+	body := fmt.Sprintf(
+		"Your verification code is: %s\r\n\r\nThis code expires in 15 minutes.\r\nIf you didn't request this, you can safely ignore this email.\r\n",
+		code)
+	return sendEmail(cfg, toEmail, "Your Aura verification code", body)
+}
+
+// sendPasswordResetEmail sends a short plain-text message containing a
+// password-reset code to toEmail.
+func sendPasswordResetEmail(cfg *Config, toEmail, code string) error {
+	body := fmt.Sprintf(
+		"Your password reset code is: %s\r\n\r\nThis code expires in 15 minutes.\r\nIf you didn't request this, you can safely ignore this email -- your password won't change.\r\n",
+		code)
+	return sendEmail(cfg, toEmail, "Your Aura password reset code", body)
 }
