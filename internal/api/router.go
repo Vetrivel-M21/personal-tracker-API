@@ -72,6 +72,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/habits", s.handleCreateHabit)
 	mux.HandleFunc("DELETE /api/habits/{id}", s.handleDeleteHabit)
 
+	mux.HandleFunc("GET /api/todos", s.handleListTodos)
+	mux.HandleFunc("POST /api/todos", s.handleCreateTodo)
+	mux.HandleFunc("PATCH /api/todos/{id}", s.handleUpdateTodo)
+	mux.HandleFunc("DELETE /api/todos/{id}", s.handleDeleteTodo)
+
 	mux.HandleFunc("GET /api/progress/{date}", s.handleGetProgress)
 	mux.HandleFunc("GET /api/progress", s.handleListProgress)
 	mux.HandleFunc("PUT /api/progress/{date}", s.handleUpsertProgress)
