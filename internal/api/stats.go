@@ -23,6 +23,10 @@ func levelFromXP(xp int) (level, xpIntoLevel, xpForNextLevel int) {
 	return level, xp - xpForCurrentLevel, xpForNextLevel
 }
 
+// maxStreakShields caps how many shields a user can bank at once, granted
+// (see handleUpsertProgress) one per 7-day real-streak milestone.
+const maxStreakShields = 3
+
 // streakStats is the result of computeStreak/computeStreakWith.
 type streakStats struct {
 	CurrentStreak    int `json:"current_streak"`

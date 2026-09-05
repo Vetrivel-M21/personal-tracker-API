@@ -1,0 +1,1 @@
+ALTER TABLE habits ADD COLUMN schedule smallint NOT NULL DEFAULT 127;

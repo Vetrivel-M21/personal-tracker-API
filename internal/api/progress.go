@@ -182,6 +182,14 @@ func (s *Server) handleUpsertProgress(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("load existing progress: %w", existingErr)
 		}
 
+		// Peek the streak as it stands before this write, so we can tell
+		// afterward whether this save just crossed a new 7-day milestone
+		// (and should grant a shield) -- read-only, does not consume shields.
+		preStreak, preErr := computeStreakWith(r.Context(), tx, userID, false)
+		if preErr != nil {
+			return preErr
+		}
+
 		row := tx.QueryRow(r.Context(),
 			`INSERT INTO daily_progress (user_id, date, completed_habits, learning_hours, mood, notes)
 			 VALUES ($1,$2,$3,$4,$5,$6)
@@ -211,6 +219,25 @@ func (s *Server) handleUpsertProgress(w http.ResponseWriter, r *http.Request) {
 		streak, streakErr := computeStreakWith(r.Context(), tx, userID, true)
 		if streakErr != nil {
 			return streakErr
+		}
+
+		// Grant a shield for every new 7-day milestone this save just
+		// crossed (capped), on top of whatever computeStreakWith already
+		// consumed above for gap-bridging. streak.ShieldsRemaining already
+		// reflects the current DB value at this point.
+		if newMilestones := streak.CurrentStreak/7 - preStreak.CurrentStreak/7; newMilestones > 0 {
+			granted := maxStreakShields - streak.ShieldsRemaining
+			if granted > newMilestones {
+				granted = newMilestones
+			}
+			if granted > 0 {
+				if _, err := tx.Exec(r.Context(),
+					`UPDATE streak_shields SET shield_count = shield_count + $2, updated_at = now() WHERE user_id = $1`,
+					userID, granted); err != nil {
+					return fmt.Errorf("grant shield: %w", err)
+				}
+				streak.ShieldsRemaining += granted
+			}
 		}
 
 		level, xpIntoLevel, xpForNextLevel := levelFromXP(newXP)

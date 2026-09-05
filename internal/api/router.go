@@ -70,7 +70,9 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/habits", s.handleListHabits)
 	mux.HandleFunc("POST /api/habits", s.handleCreateHabit)
+	mux.HandleFunc("PATCH /api/habits/{id}", s.handleUpdateHabit)
 	mux.HandleFunc("DELETE /api/habits/{id}", s.handleDeleteHabit)
+	mux.HandleFunc("POST /api/habits/{id}/restore", s.handleRestoreHabit)
 
 	mux.HandleFunc("GET /api/todos", s.handleListTodos)
 	mux.HandleFunc("POST /api/todos", s.handleCreateTodo)
